@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Test de la chaîne de supervision : une supervision qu'on n'a jamais vue
+# sonner n'est pas testée. Le script coupe WordPress, attend que l'alerte
+# WordPressDown soit active dans Alertmanager, relance le service puis attend
+# la résolution de l'alerte. Code de sortie non nul si une étape échoue.
+set -euo pipefail
+
+readonly STACK_DIR="{{ stack_dir }}"
+readonly ALERTMANAGER="http://127.0.0.1:9093"
+readonly ALERT_NAME="WordPressDown"
+readonly FIRE_TIMEOUT=300
+readonly RESOLVE_TIMEOUT=300
+readonly METRIC_FILE="/var/lib/node_exporter/textfile/monitoring_test.prom"
+
+compose() { docker compose --project-directory "${STACK_DIR}" "$@"; }
+log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+
+alert_active() {
+  curl -fsS -G "${ALERTMANAGER}/api/v2/alerts" \
+      --data-urlencode "filter=alertname=\"${ALERT_NAME}\"" \
+      --data-urlencode "active=true" --data-urlencode "silenced=false" \
+    | jq -e 'length > 0' >/dev/null
+}
+
+wait_for() {
+  local description="$1" timeout="$2"; shift 2
+  local start=${SECONDS}
+  until "$@"; do
+    if (( SECONDS - start > timeout )); then
+      log "ÉCHEC : ${description} (délai de ${timeout}s dépassé)"
+      return 1
+    fi
+    sleep 5
+  done
+  log "OK : ${description} ($(( SECONDS - start ))s)"
+}
+
+not_alert_active() { ! alert_active; }
+wordpress_healthy() {
+  [[ "$(docker inspect -f '{{ '{{' }}.State.Health.Status{{ '}}' }}' "$(compose ps -q wordpress)")" == "healthy" ]]
+}
+
+# Quoi qu'il arrive, on ne laisse pas WordPress arrêté.
+restore_service() { compose start wordpress >/dev/null 2>&1 || true; }
+trap restore_service EXIT
+
+wait_for "aucune alerte ${ALERT_NAME} préexistante" 120 not_alert_active
+
+log "Arrêt volontaire de WordPress"
+compose stop wordpress >/dev/null
+
+wait_for "alerte ${ALERT_NAME} déclenchée" "${FIRE_TIMEOUT}" alert_active
+
+log "Redémarrage de WordPress"
+compose start wordpress >/dev/null
+wait_for "WordPress de nouveau sain" 180 wordpress_healthy
+wait_for "alerte ${ALERT_NAME} résolue" "${RESOLVE_TIMEOUT}" not_alert_active
+
+cat > "${METRIC_FILE}.tmp" <<EOF
+# HELP wp_monitoring_test_last_success_timestamp_seconds Dernier test d'alerte réussi.
+# TYPE wp_monitoring_test_last_success_timestamp_seconds gauge
+wp_monitoring_test_last_success_timestamp_seconds $(date +%s)
+EOF
+mv "${METRIC_FILE}.tmp" "${METRIC_FILE}"
+
+log "Test de supervision réussi"

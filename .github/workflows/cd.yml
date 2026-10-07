@@ -1,0 +1,349 @@
+# -----------------------------------------------------------------------------
+# Chaîne de déploiement. Chaque étape est un contrôle bloquant :
+#
+#   contrôles CI ─▶ build + scan image ─▶ publication (image scannée seulement)
+#        ─▶ staging éphémère : déploiement, tests de fumée, WPScan,
+#           test d'alerte, test de restauration ─▶ destruction du staging
+#        ─▶ approbation manuelle ─▶ production
+#
+# L'image est déployée par digest : ce qui a été scanné est ce qui tourne.
+# Aucun secret Azure n'est stocké : authentification OIDC fédérée.
+# -----------------------------------------------------------------------------
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  workflow_dispatch:
+    inputs:
+      demo_vulnerable_plugin:
+        description: >-
+          Démo de blocage : plugin vulnérable à installer en staging
+          (slug:version). La production n'est jamais déployée lors d'une démo.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+# Un seul déploiement à la fois, jamais annulé en cours de route.
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  ARM_USE_OIDC: "true"
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_dns_label_prefix: ${{ vars.DNS_LABEL_PREFIX }}
+  TF_VAR_admin_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+  ANSIBLE_CONFIG: ansible/ansible.cfg
+  ANSIBLE_FORCE_COLOR: "true"
+  TRIVY_IGNOREFILE: .trivyignore.yaml
+
+jobs:
+  checks:
+    name: Contrôles CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  build:
+    name: Build, scan et publication de l'image
+    needs: checks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Nom de l'image (GHCR exige des minuscules)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/wordpress-hardened" >> "${GITHUB_ENV}"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Construire l'image localement
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/wordpress
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+
+      # Le scan a lieu AVANT la publication : une image vulnérable n'atteint
+      # jamais le registre.
+      - name: Trivy image (bloquant)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Générer le SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: cyclonedx
+          output: sbom.cdx.json
+          skip-setup-trivy: true
+
+      - name: Archiver le SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.cdx.json
+          retention-days: 90
+
+      - name: Connexion à GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publier l'image scannée et récupérer son digest
+        id: publish
+        run: |
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          ref="$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${GITHUB_SHA}")"
+          echo "image=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "Image publiée : \`${ref}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+  staging:
+    name: Staging éphémère (déploiement + tests de sécurité)
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: staging
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      TF_DIR: terraform/environments/staging
+      WORK: ${{ github.workspace }}/.deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-tools
+
+      - name: Connexion Azure (OIDC, sans secret)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init
+        run: >-
+          terraform -chdir="${TF_DIR}" init
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+
+      - name: Terraform apply (création du staging)
+        run: terraform -chdir="${TF_DIR}" apply -auto-approve
+
+      - name: Générer l'inventaire et les secrets Ansible
+        id: tf
+        run: scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" staging
+
+      - name: Ouvrir un accès éphémère (SSH + HTTPS) pour ce runner uniquement
+        run: scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22 80 443"
+
+      - name: Préparer la clé SSH et les variables d'exécution
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          DEMO_PLUGIN: ${{ inputs.demo_vulnerable_plugin }}
+        run: |
+          umask 077
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${WORK}/id_deploy"
+          jq -n \
+            --arg wp_image "${IMAGE}" \
+            --arg acme_email "${ACME_EMAIL}" \
+            --arg ghcr_username "${GITHUB_ACTOR}" \
+            --arg ghcr_token "${GHCR_TOKEN}" \
+            --arg wp_demo_vulnerable_plugin "${DEMO_PLUGIN}" \
+            '$ARGS.named' > "${WORK}/runtime.yml"
+
+      - name: Déployer avec Ansible
+        run: >-
+          ansible-playbook ansible/site.yml
+          -i "${WORK}/inventory.yml"
+          --private-key "${WORK}/id_deploy"
+          -e @"${WORK}/secrets.yml" -e @"${WORK}/runtime.yml"
+
+      - name: Tests de fumée
+        run: scripts/smoke-test.sh "${{ steps.tf.outputs.fqdn }}" --insecure
+
+      - name: Scan dynamique WPScan
+        env:
+          WPSCAN_API_TOKEN: ${{ secrets.WPSCAN_API_TOKEN }}
+          FQDN: ${{ steps.tf.outputs.fqdn }}
+        run: |
+          if [[ -z "${WPSCAN_API_TOKEN}" ]]; then
+            echo "::error::Secret WPSCAN_API_TOKEN manquant : sans lui, WPScan ne détecte aucune vulnérabilité."
+            exit 1
+          fi
+          mkdir -p "${WORK}/wpscan" && chmod 777 "${WORK}/wpscan"
+          # Code de sortie de WPScan ignoré ici : la décision revient au gate.
+          docker run --rm -v "${WORK}/wpscan:/out" wpscanteam/wpscan:v4.1.0 \
+            --url "https://${FQDN}/" \
+            --disable-tls-checks \
+            --api-token "${WPSCAN_API_TOKEN}" \
+            --enumerate vp,vt,tt,cb,dbe,u1-5 \
+            --plugins-detection mixed \
+            --random-user-agent \
+            --format json --output /out/wpscan.json || true
+
+      - name: Contrôle bloquant WPScan
+        run: >-
+          python3 scripts/wpscan_gate.py "${WORK}/wpscan/wpscan.json"
+          --allowlist security/wpscan-allowlist.json
+          --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Test de la supervision (l'alerte se déclenche-t-elle ?)
+        run: >-
+          ansible-playbook ansible/test-monitoring.yml
+          -i "${WORK}/inventory.yml" --private-key "${WORK}/id_deploy"
+
+      - name: Test de restauration des sauvegardes
+        run: >-
+          ansible-playbook ansible/test-restore.yml
+          -i "${WORK}/inventory.yml" --private-key "${WORK}/id_deploy"
+
+      - name: Archiver le rapport WPScan
+        if: always() && hashFiles('.deploy/wpscan/wpscan.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wpscan-staging-${{ github.run_id }}
+          path: .deploy/wpscan/wpscan.json
+          retention-days: 30
+
+      - name: Fermer l'accès éphémère
+        if: always() && steps.tf.outputs.nsg != ''
+        run: scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
+
+      - name: Détruire le staging
+        if: always()
+        run: terraform -chdir="${TF_DIR}" destroy -auto-approve
+
+      - name: Effacer les fichiers sensibles
+        if: always()
+        run: rm -rf "${WORK}"
+
+  production:
+    name: Production
+    needs: [build, staging]
+    # Une démo de blocage ne déploie jamais en production.
+    if: github.event_name == 'push' || inputs.demo_vulnerable_plugin == ''
+    runs-on: ubuntu-24.04
+    # Approbation manuelle configurée sur l'environnement GitHub "production".
+    environment:
+      name: production
+      url: https://${{ vars.DNS_LABEL_PREFIX }}.francecentral.cloudapp.azure.com
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      TF_DIR: terraform/environments/production
+      WORK: ${{ github.workspace }}/.deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-tools
+
+      - name: Connexion Azure (OIDC, sans secret)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init
+        run: >-
+          terraform -chdir="${TF_DIR}" init
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+
+      - name: Terraform plan
+        run: terraform -chdir="${TF_DIR}" plan -out=tfplan
+
+      - name: Terraform apply (plan relu ci-dessus)
+        run: terraform -chdir="${TF_DIR}" apply tfplan
+
+      - name: Générer l'inventaire et les secrets Ansible
+        id: tf
+        run: scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
+
+      - name: Ouvrir un accès SSH éphémère pour ce runner uniquement
+        run: scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
+
+      - name: Préparer la clé SSH et les variables d'exécution
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          DISCORD_WEBHOOK: ${{ secrets.ALERT_DISCORD_WEBHOOK }}
+        run: |
+          umask 077
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${WORK}/id_deploy"
+          jq -n \
+            --arg wp_image "${IMAGE}" \
+            --arg acme_email "${ACME_EMAIL}" \
+            --arg ghcr_username "${GITHUB_ACTOR}" \
+            --arg ghcr_token "${GHCR_TOKEN}" \
+            --arg alert_discord_webhook "${DISCORD_WEBHOOK}" \
+            '$ARGS.named' > "${WORK}/runtime.yml"
+
+      - name: Déployer avec Ansible
+        run: >-
+          ansible-playbook ansible/site.yml
+          -i "${WORK}/inventory.yml"
+          --private-key "${WORK}/id_deploy"
+          -e @"${WORK}/secrets.yml" -e @"${WORK}/runtime.yml"
+
+      - name: Tests de fumée
+        run: scripts/smoke-test.sh "${{ steps.tf.outputs.fqdn }}"
+
+      - name: Marquer l'image comme déployée en production
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker buildx imagetools create --tag "${IMAGE%@*}:production" "${IMAGE}"
+          docker logout ghcr.io
+
+      - name: Fermer l'accès éphémère
+        if: always() && steps.tf.outputs.nsg != ''
+        run: scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
+
+      - name: Effacer les fichiers sensibles
+        if: always()
+        run: rm -rf "${WORK}"

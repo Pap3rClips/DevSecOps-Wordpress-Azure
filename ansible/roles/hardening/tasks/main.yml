@@ -1,0 +1,84 @@
+---
+- name: Mettre à jour le système
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: safe
+
+- name: Installer les paquets de sécurité de base
+  ansible.builtin.apt:
+    name:
+      - unattended-upgrades
+      - fail2ban
+      - ufw
+      - auditd
+      - apt-listchanges
+    state: present
+
+- name: Activer les mises à jour de sécurité automatiques
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Durcir la configuration SSH
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Redémarrer ssh
+
+- name: Configurer fail2ban pour SSH
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/sshd.local
+    content: |
+      [sshd]
+      enabled = true
+      backend = systemd
+      maxretry = 4
+      findtime = 10m
+      bantime = 1h
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Redémarrer fail2ban
+
+- name: Appliquer les paramètres noyau de durcissement
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-hardening.conf
+    state: present
+    reload: true
+  loop: "{{ hardening_sysctl | dict2items }}"
+
+# Défense en profondeur : le NSG Azure filtre déjà, ufw filtre aussi sur l'hôte.
+# Note : Docker publie ses ports via iptables en amont d'ufw. C'est pourquoi
+# les ports internes (Prometheus, Alertmanager) sont liés à 127.0.0.1 dans le
+# fichier compose, et non simplement « bloqués par ufw ».
+- name: Politique ufw par défaut
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    default: "{{ item.policy }}"
+  loop:
+    - { direction: incoming, policy: deny }
+    - { direction: outgoing, policy: allow }
+
+- name: Autoriser SSH, HTTP et HTTPS dans ufw
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: ["22", "80", "443"]
+
+- name: Activer ufw
+  community.general.ufw:
+    state: enabled

@@ -1,0 +1,33 @@
+name: Préparer les outils
+description: Installe Terraform, Python, Ansible et les collections Ansible aux versions épinglées.
+
+inputs:
+  terraform:
+    description: Installer Terraform
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Installer Terraform
+      if: inputs.terraform == 'true'
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        terraform_version: 1.16.5
+        terraform_wrapper: false
+
+    - name: Installer Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.13"
+        cache: pip
+        cache-dependency-path: requirements-dev.txt
+
+    - name: Installer Ansible et les outils Python
+      shell: bash
+      run: pip install -r requirements-dev.txt
+
+    - name: Installer les collections Ansible
+      shell: bash
+      working-directory: ansible
+      run: ansible-galaxy collection install -r requirements.yml -p collections

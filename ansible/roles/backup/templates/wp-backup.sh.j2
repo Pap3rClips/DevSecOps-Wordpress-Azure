@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Sauvegarde WordPress chiffrée (restic) vers Azure Blob Storage :
+#   1. dump cohérent de la base (transaction unique, sans verrou) ;
+#   2. répertoire wp-content (uploads, plugins, thèmes) ;
+#   3. rétention et purge ;
+#   4. publication du résultat pour Prometheus (alertes BackupFailed/TooOld).
+set -euo pipefail
+
+readonly STACK_DIR="{{ stack_dir }}"
+readonly METRIC_FILE="/var/lib/node_exporter/textfile/backup.prom"
+
+set -a
+# shellcheck disable=SC1091
+. /etc/restic/env
+set +a
+
+write_metrics() {
+  local success="$1" now
+  now="$(date +%s)"
+  local last_success="${now}"
+  if [[ "${success}" == "0" && -f "${METRIC_FILE}" ]]; then
+    # En cas d'échec, on conserve l'horodatage du dernier succès connu.
+    last_success="$(awk '/^wp_backup_last_success_timestamp_seconds/ {print $2}' "${METRIC_FILE}")"
+    last_success="${last_success:-0}"
+  elif [[ "${success}" == "0" ]]; then
+    last_success=0
+  fi
+  cat > "${METRIC_FILE}.tmp" <<EOF
+# HELP wp_backup_last_run_success 1 si la dernière sauvegarde a réussi.
+# TYPE wp_backup_last_run_success gauge
+wp_backup_last_run_success ${success}
+# HELP wp_backup_last_success_timestamp_seconds Horodatage de la dernière sauvegarde réussie.
+# TYPE wp_backup_last_success_timestamp_seconds gauge
+wp_backup_last_success_timestamp_seconds ${last_success}
+EOF
+  mv "${METRIC_FILE}.tmp" "${METRIC_FILE}"
+}
+trap 'write_metrics 0' ERR
+
+echo "== Sauvegarde de la base de données"
+# --stdin-from-command : si mariadb-dump échoue, aucun instantané partiel
+# n'est créé (contrairement à un simple pipe). Les variables entre apostrophes
+# sont développées volontairement DANS le conteneur, pas sur l'hôte.
+# shellcheck disable=SC2016
+restic backup \
+  --tag wp-db --host "{{ wp_env }}" \
+  --stdin-filename wordpress.sql \
+  --stdin-from-command -- \
+  docker compose --project-directory "${STACK_DIR}" exec -T db \
+    sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --routines --triggers --databases "$MARIADB_DATABASE"'
+
+echo "== Sauvegarde de wp-content"
+restic backup --tag wp-content --host "{{ wp_env }}" "${STACK_DIR}/wp-content"
+
+echo "== Rétention"
+restic forget --prune --host "{{ wp_env }}" --group-by host,tags \
+  --keep-daily {{ backup_keep_daily }} \
+  --keep-weekly {{ backup_keep_weekly }} \
+  --keep-monthly {{ backup_keep_monthly }}
+
+write_metrics 1
+echo "== Sauvegarde terminée"

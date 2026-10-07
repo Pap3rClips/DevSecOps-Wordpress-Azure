@@ -1,0 +1,18 @@
+---
+# Test de restauration : sauvegarde fraîche, restauration dans des conteneurs
+# éphémères isolés, vérification d'une valeur sentinelle. Planifié chaque
+# semaine en production, et exécuté en staging à chaque déploiement.
+- name: Tester la restauration des sauvegardes
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Lancer le test de restauration
+      ansible.builtin.command: /usr/local/sbin/wp-restore-test
+      register: restore_test
+      changed_when: true
+
+    - name: Afficher le résultat
+      ansible.builtin.debug:
+        var: restore_test.stdout_lines

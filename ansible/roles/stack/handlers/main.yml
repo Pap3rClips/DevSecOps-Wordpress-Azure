@@ -1,0 +1,6 @@
+---
+- name: Redémarrer les services reconfigurés
+  ansible.builtin.command: >-
+    docker compose --project-directory {{ stack_dir }}
+    restart caddy prometheus alertmanager blackbox
+  changed_when: true

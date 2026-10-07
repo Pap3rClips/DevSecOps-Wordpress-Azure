@@ -1,0 +1,80 @@
+# Test de restauration hebdomadaire en production : une sauvegarde n'existe
+# que si l'on a prouvé qu'on sait la restaurer. Le résultat est aussi publié
+# en métrique : Prometheus alerte si aucun test n'a réussi depuis 8 jours.
+name: Test de restauration (production)
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # lundi 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  ARM_USE_OIDC: "true"
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  ANSIBLE_CONFIG: ansible/ansible.cfg
+
+jobs:
+  restore-test:
+    name: Restauration de bout en bout
+    runs-on: ubuntu-24.04
+    # Environnement sans approbation, réservé à la branche main ; même
+    # identité Azure que la production (fédération OIDC dédiée).
+    environment: production-ops
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      TF_DIR: terraform/environments/production
+      WORK: ${{ github.workspace }}/.deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-tools
+
+      - name: Connexion Azure (OIDC, sans secret)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Lire les sorties Terraform de production (lecture seule)
+        id: tf
+        run: |
+          terraform -chdir="${TF_DIR}" init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+          scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
+
+      - name: Ouvrir un accès SSH éphémère
+        run: scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
+
+      - name: Lancer le test de restauration
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          (umask 077; printf '%s\n' "${SSH_PRIVATE_KEY}" > "${WORK}/id_deploy")
+          ansible-playbook ansible/test-restore.yml \
+            -i "${WORK}/inventory.yml" --private-key "${WORK}/id_deploy"
+
+      - name: Fermer l'accès éphémère
+        if: always() && steps.tf.outputs.nsg != ''
+        run: scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
+
+      - name: Effacer les fichiers sensibles
+        if: always()
+        run: rm -rf "${WORK}"

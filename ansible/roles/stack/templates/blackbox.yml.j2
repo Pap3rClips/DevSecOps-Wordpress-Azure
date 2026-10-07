@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+modules:
+  # Sonde interne : WordPress répond-il, indépendamment du proxy et du DNS ?
+  wordpress_internal:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      no_follow_redirects: true
+      headers:
+        Host: {{ wp_fqdn }}
+        X-Forwarded-Proto: https
+
+  # Sonde externe (production) : chaîne complète DNS + TLS + proxy, et date
+  # d'expiration du certificat.
+  https_external:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      fail_if_not_ssl: true
+      preferred_ip_protocol: ip4

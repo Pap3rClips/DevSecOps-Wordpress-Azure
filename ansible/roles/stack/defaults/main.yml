@@ -1,0 +1,10 @@
+---
+stack_wp_cli: >-
+  docker compose --project-directory {{ stack_dir }}
+  exec -T -u www-data wordpress wp --path=/var/www/html
+
+stack_wp_options:
+  blog_public: "{{ '1' if wp_search_engine_visible else '0' }}"
+  users_can_register: "0"
+  default_comment_status: closed
+  default_ping_status: closed

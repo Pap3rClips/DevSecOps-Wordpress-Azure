@@ -1,0 +1,155 @@
+# {{ ansible_managed }}
+# Stack WordPress ({{ wp_env }}) — reverse proxy TLS, application, base de
+# données et supervision. Réseaux cloisonnés : la base n'est joignable que
+# par WordPress et n'a aucun accès sortant.
+name: wordpress
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  caddy:
+    <<: *hardening
+    image: {{ images.caddy }}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 128m
+    networks: [frontend]
+    depends_on:
+      wordpress:
+        condition: service_healthy
+
+  wordpress:
+    <<: *hardening
+    # Référencée par digest : exactement l'image scannée par Trivy en CI.
+    image: {{ wp_image }}
+    env_file: .env-wordpress
+    environment:
+      WORDPRESS_CONFIG_EXTRA: |
+        if (isset($$_SERVER['HTTP_X_FORWARDED_PROTO']) && $$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') { $$_SERVER['HTTPS'] = 'on'; }
+        define('WP_HOME', 'https://{{ wp_fqdn }}');
+        define('WP_SITEURL', 'https://{{ wp_fqdn }}');
+        define('WP_ENVIRONMENT_TYPE', '{{ wp_env }}');
+        define('FORCE_SSL_ADMIN', true);
+        define('DISALLOW_FILE_EDIT', true);
+        define('WP_AUTO_UPDATE_CORE', false);
+        define('WP_DEBUG', false);
+    # Cœur WordPress immuable : recopié depuis l'image à chaque démarrage dans
+    # un tmpfs. Seul wp-content (uploads, plugins) est persistant.
+    tmpfs:
+      - /var/www/html:uid=33,gid=33,mode=0755,size=256m
+    volumes:
+      - ./wp-content:/var/www/html/wp-content
+    # Image non-root (www-data, port 8080) : aucune capability nécessaire.
+    cap_drop: [ALL]
+    mem_limit: 512m
+    networks: [frontend, backend]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    <<: *hardening
+    image: {{ images.mariadb }}
+    env_file: .env-db
+    volumes:
+      - ./db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 512m
+    networks: [backend]
+
+  prometheus:
+    <<: *hardening
+    image: {{ images.prometheus }}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./config/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    # Interface d'administration accessible uniquement via un tunnel SSH.
+    ports:
+      - "127.0.0.1:9090:9090"
+    cap_drop: [ALL]
+    read_only: true
+    mem_limit: 256m
+    networks: [monitoring]
+
+  alertmanager:
+    <<: *hardening
+    image: {{ images.alertmanager }}
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./config/alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    cap_drop: [ALL]
+    read_only: true
+    mem_limit: 64m
+    networks: [monitoring]
+
+  blackbox:
+    <<: *hardening
+    image: {{ images.blackbox }}
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./config/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    cap_drop: [ALL]
+    read_only: true
+    mem_limit: 64m
+    networks: [frontend, monitoring]
+
+  node-exporter:
+    <<: *hardening
+    image: {{ images.node_exporter }}
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+      - /var/lib/node_exporter/textfile:/textfile:ro
+    cap_drop: [ALL]
+    read_only: true
+    mem_limit: 64m
+    networks: [monitoring]
+
+networks:
+  frontend: {}
+  backend:
+    internal: true
+  monitoring: {}
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+  prometheus_data: {}
+  alertmanager_data: {}

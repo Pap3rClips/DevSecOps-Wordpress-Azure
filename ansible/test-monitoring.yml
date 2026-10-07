@@ -1,0 +1,17 @@
+---
+# Test de la supervision : coupe volontairement WordPress et vérifie que
+# l'alerte est bien levée puis résolue. Exécuté en staging à chaque déploiement.
+- name: Tester la chaîne d'alerte
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Lancer le test d'alerte
+      ansible.builtin.command: /usr/local/sbin/wp-monitoring-test
+      register: monitoring_test
+      changed_when: true
+
+    - name: Afficher le résultat
+      ansible.builtin.debug:
+        var: monitoring_test.stdout_lines

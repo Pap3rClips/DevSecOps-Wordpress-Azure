@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Test de restauration de bout en bout. Une sauvegarde n'existe que si on a
+# prouvé qu'on sait la restaurer.
+#   1. écrit une valeur sentinelle unique dans la base de production ;
+#   2. lance une sauvegarde fraîche ;
+#   3. restaure le dernier instantané dans un répertoire temporaire ;
+#   4. importe le dump dans une base MariaDB éphémère SANS réseau ;
+#   5. vérifie que la sentinelle restaurée est identique ;
+#   6. vérifie wp-content et l'intégrité d'un échantillon des données du dépôt.
+set -euo pipefail
+
+readonly STACK_DIR="{{ stack_dir }}"
+readonly MARIADB_IMAGE="{{ images.mariadb }}"
+readonly METRIC_FILE="/var/lib/node_exporter/textfile/restore_test.prom"
+readonly CONTAINER="restore-test-db-$$"
+SENTINEL="restore-test-$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}${RANDOM}"
+readonly SENTINEL
+
+set -a
+# shellcheck disable=SC1091
+. /etc/restic/env
+set +a
+
+log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+fail() { log "ÉCHEC : $*"; exit 1; }
+
+WORKDIR="$(mktemp -d /var/tmp/restore-test.XXXXXX)"
+cleanup() {
+  docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+  rm -rf "${WORKDIR}"
+}
+trap cleanup EXIT
+
+log "1/6 Écriture de la sentinelle ${SENTINEL}"
+docker compose --project-directory "${STACK_DIR}" exec -T -u www-data wordpress \
+  wp --path=/var/www/html option update wp_backup_sentinel "${SENTINEL}" >/dev/null
+
+log "2/6 Sauvegarde fraîche"
+/usr/local/sbin/wp-backup >/dev/null
+
+log "3/6 Restauration du dernier instantané"
+restic restore latest --host "{{ wp_env }}" --tag wp-db --target "${WORKDIR}/db" >/dev/null
+restic restore latest --host "{{ wp_env }}" --tag wp-content --target "${WORKDIR}/content" >/dev/null
+DUMP="${WORKDIR}/db/wordpress.sql"
+[[ -s "${DUMP}" ]] || fail "dump absent ou vide"
+
+log "4/6 Import dans une base éphémère isolée (--network none)"
+DB_ROOT_PASSWORD="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+docker run -d --name "${CONTAINER}" --network none \
+  -e MARIADB_ROOT_PASSWORD="${DB_ROOT_PASSWORD}" \
+  "${MARIADB_IMAGE}" >/dev/null
+
+for _ in $(seq 1 60); do
+  if docker exec "${CONTAINER}" healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+docker exec "${CONTAINER}" healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1 \
+  || fail "la base éphémère n'a pas démarré"
+
+docker exec -i -e MYSQL_PWD="${DB_ROOT_PASSWORD}" "${CONTAINER}" mariadb -uroot < "${DUMP}"
+
+log "5/6 Vérification de la sentinelle"
+RESTORED="$(docker exec -e MYSQL_PWD="${DB_ROOT_PASSWORD}" "${CONTAINER}" \
+  mariadb -uroot -N -B wordpress \
+  -e "SELECT option_value FROM wp_options WHERE option_name = 'wp_backup_sentinel'")"
+[[ "${RESTORED}" == "${SENTINEL}" ]] \
+  || fail "sentinelle attendue '${SENTINEL}', obtenue '${RESTORED}'"
+
+POSTS="$(docker exec -e MYSQL_PWD="${DB_ROOT_PASSWORD}" "${CONTAINER}" \
+  mariadb -uroot -N -B wordpress -e "SELECT COUNT(*) FROM wp_posts")"
+log "    sentinelle identique, ${POSTS} entrées dans wp_posts"
+
+log "6/6 Vérification de wp-content et de l'intégrité du dépôt"
+[[ -d "${WORKDIR}/content${STACK_DIR}/wp-content/themes" ]] || fail "wp-content restauré incomplet"
+restic check --read-data-subset=5% >/dev/null
+
+cat > "${METRIC_FILE}.tmp" <<EOF
+# HELP wp_restore_test_last_success_timestamp_seconds Dernier test de restauration réussi.
+# TYPE wp_restore_test_last_success_timestamp_seconds gauge
+wp_restore_test_last_success_timestamp_seconds $(date +%s)
+EOF
+mv "${METRIC_FILE}.tmp" "${METRIC_FILE}"
+
+log "Test de restauration réussi"

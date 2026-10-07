@@ -1,0 +1,52 @@
+# Rescan quotidien de l'image actuellement en production. Une image saine au
+# moment du déploiement peut devenir vulnérable le lendemain : de nouvelles CVE
+# sont publiées en continu. Un échec ici signale qu'un redéploiement (avec
+# une image de base à jour) est nécessaire.
+name: Rescan de l'image en production
+
+on:
+  schedule:
+    - cron: "43 5 * * *" # tous les jours 05:43 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rescan:
+    name: Trivy sur l'image :production
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    env:
+      TRIVY_USERNAME: ${{ github.actor }}
+      TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      TRIVY_IGNOREFILE: .trivyignore.yaml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Nom de l'image
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/wordpress-hardened:production" >> "${GITHUB_ENV}"
+
+      - name: Trivy image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-production.sarif
+          limit-severities-for-sarif: true
+
+      - name: Publier les résultats dans l'onglet Security
+        if: always() && hashFiles('trivy-production.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-production.sarif
+          category: trivy-production

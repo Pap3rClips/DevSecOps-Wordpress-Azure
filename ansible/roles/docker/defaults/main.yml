@@ -1,0 +1,17 @@
+---
+docker_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+
+docker_daemon_config:
+  # Les processus des conteneurs ne peuvent pas gagner de privilèges (setuid).
+  no-new-privileges: true
+  # Les conteneurs survivent à un redémarrage du démon.
+  live-restore: true
+  # Pas de communication inter-conteneurs implicite sur le bridge par défaut.
+  icc: false
+  # Rotation des journaux : évite de remplir le disque.
+  log-driver: json-file
+  log-opts:
+    max-size: 10m
+    max-file: "5"

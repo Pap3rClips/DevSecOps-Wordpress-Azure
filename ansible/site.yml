@@ -1,0 +1,48 @@
+---
+- name: Attendre que la VM soit prête
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Attendre la disponibilité de SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Attendre la fin de cloud-init (verrous APT)
+      ansible.builtin.command: cloud-init status --wait
+      register: cloud_init
+      changed_when: false
+      # 2 = terminé avec des avertissements non bloquants
+      failed_when: cloud_init.rc not in [0, 2]
+      become: true
+
+- name: Déployer la stack WordPress durcie
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Vérifier que les variables obligatoires sont fournies
+      ansible.builtin.assert:
+        that:
+          - wp_env in ['staging', 'production']
+          - wp_fqdn | length > 0
+          - wp_image is search('@sha256:')
+          - acme_email | length > 0
+          - db_root_password | length >= 32
+          - db_password | length >= 32
+          - wp_admin_password | length >= 24
+          - wp_salt_seed | length >= 32
+          - restic_password | length >= 32
+          - backup_storage_account | length > 0
+          - backup_container | length > 0
+          - backup_sas_token | length > 0
+        fail_msg: >-
+          Variables manquantes ou invalides. L'image doit être référencée par
+          digest (image@sha256:...) : on déploie exactement ce qui a été scanné.
+        quiet: true
+
+  roles:
+    - role: hardening
+    - role: docker
+    - role: stack
+    - role: backup

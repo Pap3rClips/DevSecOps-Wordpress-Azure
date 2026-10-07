@@ -1,0 +1,30 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+tfplan
+crash.log
+.terraform.tfstate.lock.info
+
+# Ansible
+ansible/collections/
+*.retry
+
+# Fichiers générés pendant un déploiement (secrets, clés, rapports)
+.deploy/
+*.pem
+id_deploy*
+secrets.yml
+runtime.yml
+
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Divers
+.DS_Store
+.idea/
+.vscode/

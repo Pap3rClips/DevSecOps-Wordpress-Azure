@@ -1,0 +1,26 @@
+# Mises à jour automatiques proposées en PR : elles passent par les mêmes
+# contrôles bloquants que tout autre changement.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /docker/wordpress
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: terraform
+    directories: ["/terraform/bootstrap", "/terraform/environments/*", "/terraform/modules/*"]
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly

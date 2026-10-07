@@ -1,0 +1,9 @@
+# Toute modification doit être relue par le propriétaire du dépôt.
+* @Pap3rClips
+
+# Les fichiers qui conditionnent la sécurité de la chaîne sont listés
+# explicitement pour rendre leur relecture visible.
+/.github/                    @Pap3rClips
+/terraform/bootstrap/        @Pap3rClips
+/security/                   @Pap3rClips
+/.trivyignore.yaml           @Pap3rClips

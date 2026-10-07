@@ -1,0 +1,70 @@
+# {{ ansible_managed }}
+groups:
+  - name: wordpress
+    rules:
+      - alert: WordPressDown
+        expr: probe_success{job="blackbox-internal"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WordPress ne répond plus ({{ '{{' }} $labels.instance {{ '}}' }})"
+
+      - alert: SiteUnreachableFromInternet
+        expr: probe_success{job="blackbox-external"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Le site n'est pas joignable en HTTPS depuis l'extérieur"
+
+      - alert: TLSCertificateExpiringSoon
+        expr: probe_ssl_earliest_cert_expiry{job="blackbox-external"} - time() < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Le certificat TLS expire dans moins de 14 jours"
+
+  - name: host
+    rules:
+      - alert: DiskSpaceLow
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Moins de 15 % d'espace disque libre"
+
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cible de supervision injoignable ({{ '{{' }} $labels.job {{ '}}' }})"
+
+  # Les sauvegardes et leurs tests sont eux-mêmes supervisés : une sauvegarde
+  # qui échoue en silence est le scénario à éviter.
+  - name: backup
+    rules:
+      - alert: BackupFailed
+        expr: wp_backup_last_run_success == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "La dernière sauvegarde a échoué"
+
+      - alert: BackupTooOld
+        expr: time() - wp_backup_last_success_timestamp_seconds > 30 * 3600
+        labels:
+          severity: critical
+        annotations:
+          summary: "Aucune sauvegarde réussie depuis plus de 30 heures"
+
+      - alert: RestoreTestTooOld
+        expr: time() - wp_restore_test_last_success_timestamp_seconds > 8 * 86400
+        labels:
+          severity: warning
+        annotations:
+          summary: "Aucun test de restauration réussi depuis plus de 8 jours"

@@ -1,0 +1,4 @@
+{
+  "_comment": "Exceptions au contrôle WPScan. Chaque entrée exige des identifiants (CVE-... ou WPVDB-...), une justification et une date d'expiration (AAAA-MM-JJ). Une exception expirée fait échouer le pipeline : elle doit être réévaluée, pas oubliée.",
+  "exceptions": []
+}

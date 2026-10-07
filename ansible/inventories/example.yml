@@ -1,0 +1,10 @@
+---
+# En CI, l'inventaire est généré à partir des sorties Terraform
+# (scripts/render-inventory.sh). Ce fichier sert d'exemple pour un usage manuel.
+all:
+  hosts:
+    app:
+      ansible_host: 203.0.113.10
+      ansible_user: deploy
+      wp_env: staging
+      wp_fqdn: wpsec-staging.francecentral.cloudapp.azure.com

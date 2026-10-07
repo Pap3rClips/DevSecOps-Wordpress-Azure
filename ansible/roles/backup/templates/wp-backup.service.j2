@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Sauvegarde WordPress (base + wp-content) vers Azure Blob avec restic
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wp-backup
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true

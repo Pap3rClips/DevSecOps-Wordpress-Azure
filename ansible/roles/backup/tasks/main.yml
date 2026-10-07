@@ -1,0 +1,94 @@
+---
+- name: Installer bzip2
+  ansible.builtin.apt:
+    name: bzip2
+    state: present
+
+# Binaire officiel épinglé et vérifié par SHA-256 (la version des dépôts Ubuntu
+# est trop ancienne pour --stdin-from-command).
+- name: Télécharger restic {{ backup_restic_version }}
+  ansible.builtin.get_url:
+    url: "https://github.com/restic/restic/releases/download/v{{ backup_restic_version }}/restic_{{ backup_restic_version }}_linux_{{ backup_restic_arch }}.bz2"
+    dest: "/usr/local/src/restic_{{ backup_restic_version }}.bz2"
+    checksum: "sha256:{{ backup_restic_checksums[backup_restic_arch] }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Installer restic {{ backup_restic_version }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    bunzip2 -c /usr/local/src/restic_{{ backup_restic_version }}.bz2 > /usr/local/bin/restic-{{ backup_restic_version }}
+    chmod 0755 /usr/local/bin/restic-{{ backup_restic_version }}
+  args:
+    executable: /bin/bash
+    creates: /usr/local/bin/restic-{{ backup_restic_version }}
+
+- name: Pointer restic vers la version installée
+  ansible.builtin.file:
+    src: /usr/local/bin/restic-{{ backup_restic_version }}
+    dest: /usr/local/bin/restic
+    state: link
+
+- name: Créer le répertoire de configuration restic
+  ansible.builtin.file:
+    path: /etc/restic
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Déposer les paramètres du dépôt restic
+  ansible.builtin.template:
+    src: restic.env.j2
+    dest: /etc/restic/env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Initialiser le dépôt restic s'il n'existe pas
+  ansible.builtin.shell: |
+    set -euo pipefail
+    set -a; . /etc/restic/env; set +a
+    if restic cat config >/dev/null 2>&1; then
+      echo "exists"
+    else
+      restic init
+    fi
+  args:
+    executable: /bin/bash
+  register: backup_restic_init
+  changed_when: "'exists' not in backup_restic_init.stdout"
+
+- name: Installer les scripts de sauvegarde et de test de restauration
+  ansible.builtin.template:
+    src: "{{ item }}.sh.j2"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - wp-backup
+    - wp-restore-test
+
+- name: Installer les unités systemd de sauvegarde
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - wp-backup.service
+    - wp-backup.timer
+  notify: Recharger systemd
+
+- name: Appliquer les unités systemd
+  ansible.builtin.meta: flush_handlers
+
+- name: Activer la sauvegarde quotidienne
+  ansible.builtin.systemd_service:
+    name: wp-backup.timer
+    state: started
+    enabled: true

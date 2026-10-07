@@ -1,0 +1,5 @@
+# Copier en terraform.tfvars (ignoré par git) puis adapter.
+subscription_id   = "00000000-0000-0000-0000-000000000000"
+github_repository = "Pap3rClips/devsecops-wordpress-azure"
+project           = "wpsec"
+location          = "francecentral"

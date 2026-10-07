@@ -1,0 +1,141 @@
+---
+- name: Installer les outils utilisés par les scripts de test
+  ansible.builtin.apt:
+    name:
+      - jq
+      - curl
+    state: present
+
+- name: Créer l'arborescence de la stack
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0750') }}"
+  loop:
+    - { path: "{{ stack_dir }}" }
+    - { path: "{{ stack_dir }}/config" }
+    - { path: "{{ stack_dir }}/config/prometheus" }
+    - { path: "{{ stack_dir }}/config/prometheus/rules" }
+    - { path: "{{ stack_dir }}/config/alertmanager" }
+    # Données persistantes (sauvegardées par restic)
+    - { path: "{{ stack_dir }}/wp-content", owner: "33", group: "33", mode: "0755" }
+    - { path: "{{ stack_dir }}/db", mode: "0700" }
+    # Métriques écrites par les scripts (sauvegarde, tests) pour Prometheus
+    - { path: /var/lib/node_exporter/textfile, mode: "0755" }
+
+- name: Déposer les fichiers d'environnement (secrets, lisibles par root uniquement)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ stack_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - .env-db
+    - .env-wordpress
+  no_log: true
+
+- name: Déposer la configuration de la stack
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ stack_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: compose.yml.j2, dest: compose.yml }
+    - { src: Caddyfile.j2, dest: config/Caddyfile }
+    - { src: prometheus.yml.j2, dest: config/prometheus/prometheus.yml }
+    - { src: alert-rules.yml.j2, dest: config/prometheus/rules/alerts.yml }
+    - { src: blackbox.yml.j2, dest: config/blackbox.yml }
+  notify: Redémarrer les services reconfigurés
+
+# Peut contenir l'URL du webhook : lisible uniquement par l'utilisateur
+# « nobody » sous lequel tourne Alertmanager.
+- name: Déposer la configuration d'Alertmanager
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ stack_dir }}/config/alertmanager/alertmanager.yml"
+    owner: "65534"
+    group: "65534"
+    mode: "0600"
+  no_log: true
+  notify: Redémarrer les services reconfigurés
+
+- name: Installer le script de test de la supervision
+  ansible.builtin.template:
+    src: wp-monitoring-test.sh.j2
+    dest: /usr/local/sbin/wp-monitoring-test
+    owner: root
+    group: root
+    mode: "0750"
+
+# Le jeton GHCR est fourni par la CI et n'est valable que pendant le job :
+# aucun identifiant de registre ne reste sur la VM.
+- name: Récupérer les images et (re)démarrer la stack
+  block:
+    - name: Se connecter au registre GHCR (jeton éphémère)
+      community.docker.docker_login:
+        registry_url: ghcr.io
+        username: "{{ ghcr_username }}"
+        password: "{{ ghcr_token }}"
+      no_log: true
+      when: ghcr_token | default('') | length > 0
+
+    - name: Démarrer la stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ stack_dir }}"
+        state: present
+        pull: missing
+        remove_orphans: true
+        wait: true
+        wait_timeout: 600
+  always:
+    - name: Se déconnecter du registre GHCR
+      community.docker.docker_login:
+        registry_url: ghcr.io
+        state: absent
+
+- name: Vérifier si WordPress est déjà installé
+  ansible.builtin.command: "{{ stack_wp_cli }} core is-installed"
+  register: stack_wp_installed
+  changed_when: false
+  failed_when: stack_wp_installed.rc not in [0, 1]
+
+- name: Installer WordPress (mot de passe transmis par l'entrée standard)
+  ansible.builtin.command: >-
+    {{ stack_wp_cli }} core install
+    --url=https://{{ wp_fqdn }}
+    --title="{{ wp_site_title }}"
+    --admin_user={{ wp_admin_user }}
+    --admin_email={{ wp_admin_email }}
+    --skip-email
+    --prompt=admin_password
+  args:
+    stdin: "{{ wp_admin_password }}"
+  when: stack_wp_installed.rc == 1
+  changed_when: true
+  no_log: true
+
+- name: Appliquer les réglages de sécurité de WordPress
+  ansible.builtin.command: "{{ stack_wp_cli }} option update {{ item.key }} {{ item.value }}"
+  loop: "{{ stack_wp_options | dict2items }}"
+  register: stack_wp_option
+  changed_when: "'Updated' in stack_wp_option.stdout"
+
+- name: Installer le plugin vulnérable de démonstration (staging uniquement)
+  when: wp_demo_vulnerable_plugin | length > 0
+  block:
+    - name: Refuser la démo hors staging
+      ansible.builtin.assert:
+        that: wp_env == 'staging'
+        fail_msg: Le plugin de démonstration ne peut être installé qu'en staging.
+
+    - name: Installer et activer le plugin de démonstration
+      ansible.builtin.command: >-
+        {{ stack_wp_cli }} plugin install {{ wp_demo_vulnerable_plugin.split(':')[0] }}
+        --version={{ wp_demo_vulnerable_plugin.split(':')[1] }}
+        --activate --force
+      changed_when: true

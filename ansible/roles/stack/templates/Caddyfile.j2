@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+{
+	email {{ acme_email }}
+}
+
+{{ wp_fqdn }} {
+{% if wp_tls_internal %}
+	# Environnement non exposé à Internet : certificat émis par la CA interne
+	# de Caddy (Let's Encrypt ne pourrait pas valider le domaine).
+	tls internal
+
+{% endif %}
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		-Server
+		-X-Powered-By
+	}
+
+	# Fichiers et points d'entrée sans usage légitime côté visiteur.
+	@blocked path /xmlrpc.php /wp-config.php* /.git* /.env* /*.sql /*.bak /wp-content/debug.log /readme.html /license.txt
+	respond @blocked 403
+
+	# Anti-énumération des comptes pour les visiteurs non authentifiés
+	# (l'éditeur de WordPress utilise ces routes une fois connecté).
+	@user_enum {
+		not header Cookie *wordpress_logged_in_*
+		expression path('/wp-json/wp/v2/users*') || {query.rest_route}.startsWith('/wp/v2/users') || {query.author} != ''
+	}
+	respond @user_enum 403
+
+	reverse_proxy wordpress:8080
+}

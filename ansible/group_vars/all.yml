@@ -1,0 +1,43 @@
+---
+# Valeurs par défaut. Les secrets et l'image à déployer sont fournis par la CI
+# via un fichier de variables temporaire (-e @secrets.yml), jamais commités.
+
+stack_dir: /srv/wordpress
+
+# TLS : certificat Let's Encrypt en production, CA interne de Caddy ailleurs
+# (le staging n'étant pas joignable depuis Internet, ACME y est impossible).
+wp_tls_internal: "{{ wp_env != 'production' }}"
+
+wp_site_title: "DevSecOps WordPress ({{ wp_env }})"
+wp_admin_user: site-owner
+wp_admin_email: "{{ acme_email }}"
+
+# Indexation par les moteurs de recherche uniquement en production.
+wp_search_engine_visible: "{{ wp_env == 'production' }}"
+
+# Démo de blocage : plugin volontairement vulnérable installé uniquement en
+# staging sur demande (workflow_dispatch). Format "slug:version", vide = rien.
+wp_demo_vulnerable_plugin: ""
+
+# Images annexes (épinglées, mises à jour via Dependabot sur docker-compose).
+images:
+  mariadb: mariadb:12.3.3-noble
+  caddy: caddy:2.11.7-alpine
+  prometheus: prom/prometheus:v3.15.0
+  alertmanager: prom/alertmanager:v0.34.1
+  blackbox: prom/blackbox-exporter:v0.29.0
+  node_exporter: prom/node-exporter:v1.12.1
+
+# Alertes : webhook Discord optionnel. Sans webhook, les alertes restent
+# consultables dans Alertmanager (et le test de supervision les vérifie là).
+alert_discord_webhook: ""
+
+# Registre d'images : jeton éphémère fourni par la CI (GITHUB_TOKEN du job).
+ghcr_username: ""
+ghcr_token: ""
+
+# Sauvegardes
+backup_schedule: "*-*-* 02:30:00"
+backup_keep_daily: 7
+backup_keep_weekly: 4
+backup_keep_monthly: 6

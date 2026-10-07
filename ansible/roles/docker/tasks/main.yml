@@ -1,0 +1,61 @@
+---
+- name: Installer les prérequis du dépôt Docker
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+    state: present
+
+- name: Créer le répertoire des clés APT
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Récupérer la clé de signature officielle de Docker
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Déclarer le dépôt Docker (signé par la clé ci-dessus uniquement)
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ docker_arch_map[ansible_architecture] | default('amd64') }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+
+- name: Installer Docker Engine et le plugin Compose
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Configurer le démon Docker
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Redémarrer docker
+
+- name: Démarrer Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Appliquer la configuration Docker avant la suite du déploiement
+  ansible.builtin.meta: flush_handlers

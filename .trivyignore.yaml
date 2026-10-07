@@ -1,0 +1,18 @@
+# Exceptions Trivy. Toute entrée doit comporter une justification (statement)
+# et une date d'expiration (expired_at) : passé cette date, l'exception cesse
+# de s'appliquer et le pipeline redevient bloquant.
+#
+# Les exceptions propres à une ressource Terraform sont déclarées au plus près
+# du code, en commentaire (#trivy:ignore:...), avec leur justification.
+#
+# Exemple :
+# vulnerabilities:
+#   - id: CVE-2026-00000
+#     statement: >-
+#       Composant présent dans l'image de base mais jamais chargé par Apache/PHP.
+#       Pas de correctif amont à ce jour. Revue le 2026-11-15.
+#     expired_at: 2026-11-15
+
+vulnerabilities: []
+misconfigurations: []
+secrets: []
