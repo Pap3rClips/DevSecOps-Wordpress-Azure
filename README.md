@@ -126,6 +126,9 @@ Chaque dossier contient son propre README, qui décrit son contenu.
 ## Démarrer
 
 La mise en place complète (abonnement Azure, bootstrap, variables GitHub, environnements protégés) est décrite pas à pas dans [docs/setup.md](docs/setup.md).
+
+> **Sans Azure configuré**, les workflows restent utiles : le CD exécute tous les contrôles, construit, scanne et publie l'image, puis **ignore** le staging et la production en l'indiquant dans le résumé du run. Le déploiement s'active automatiquement dès que les variables Azure existent.
+
 En local :
 
 ```bash
