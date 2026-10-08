@@ -1,0 +1,10 @@
+---
+# Profil le plus strict, appliqué uniquement à notre code.
+profile: production
+
+# Les collections tierces sont installées dans ce dossier par
+# ansible-galaxy (CI et `make setup`) : ce n'est pas notre code, il ne doit
+# pas être analysé.
+exclude_paths:
+  - collections/
+  - .ansible/
