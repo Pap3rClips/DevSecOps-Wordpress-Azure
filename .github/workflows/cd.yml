@@ -162,10 +162,10 @@ jobs:
 
       - name: Générer l'inventaire et les secrets Ansible
         id: tf
-        run: scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" staging
+        run: bash scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" staging
 
       - name: Ouvrir un accès éphémère (SSH + HTTPS) pour ce runner uniquement
-        run: scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22 80 443"
+        run: bash scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22 80 443"
 
       - name: Préparer la clé SSH et les variables d'exécution
         env:
@@ -193,7 +193,7 @@ jobs:
           -e @"${WORK}/secrets.yml" -e @"${WORK}/runtime.yml"
 
       - name: Tests de fumée
-        run: scripts/smoke-test.sh "${{ steps.tf.outputs.fqdn }}" --insecure
+        run: bash scripts/smoke-test.sh "${{ steps.tf.outputs.fqdn }}" --insecure
 
       - name: Scan dynamique WPScan
         env:
@@ -241,7 +241,7 @@ jobs:
 
       - name: Fermer l'accès éphémère
         if: always() && steps.tf.outputs.nsg != ''
-        run: scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
+        run: bash scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
 
       - name: Détruire le staging
         if: always()
@@ -298,10 +298,10 @@ jobs:
 
       - name: Générer l'inventaire et les secrets Ansible
         id: tf
-        run: scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
+        run: bash scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
 
       - name: Ouvrir un accès SSH éphémère pour ce runner uniquement
-        run: scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
+        run: bash scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
 
       - name: Préparer la clé SSH et les variables d'exécution
         env:
@@ -329,7 +329,7 @@ jobs:
           -e @"${WORK}/secrets.yml" -e @"${WORK}/runtime.yml"
 
       - name: Tests de fumée
-        run: scripts/smoke-test.sh "${{ steps.tf.outputs.fqdn }}"
+        run: bash scripts/smoke-test.sh "${{ steps.tf.outputs.fqdn }}"
 
       - name: Marquer l'image comme déployée en production
         env:
@@ -342,7 +342,7 @@ jobs:
 
       - name: Fermer l'accès éphémère
         if: always() && steps.tf.outputs.nsg != ''
-        run: scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
+        run: bash scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
 
       - name: Effacer les fichiers sensibles
         if: always()

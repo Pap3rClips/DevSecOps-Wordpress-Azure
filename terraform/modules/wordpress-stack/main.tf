@@ -43,7 +43,9 @@ resource "azurerm_subnet" "app" {
   address_prefixes     = [cidrsubnet(var.vnet_cidr, 8, 1)]
 
   # Le compte de stockage des sauvegardes n'accepte que le trafic de ce subnet.
-  service_endpoints = ["Microsoft.Storage"]
+  service_endpoint {
+    service = "Microsoft.Storage"
+  }
 }
 
 resource "azurerm_network_security_group" "app" {

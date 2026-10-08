@@ -58,10 +58,10 @@ jobs:
           terraform -chdir="${TF_DIR}" init \
             -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
             -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
-          scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
+          bash scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
 
       - name: Ouvrir un accès SSH éphémère
-        run: scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
+        run: bash scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
 
       - name: Lancer le test de restauration
         env:
@@ -73,7 +73,7 @@ jobs:
 
       - name: Fermer l'accès éphémère
         if: always() && steps.tf.outputs.nsg != ''
-        run: scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
+        run: bash scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
 
       - name: Effacer les fichiers sensibles
         if: always()
