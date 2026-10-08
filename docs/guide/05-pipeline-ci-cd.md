@@ -91,6 +91,13 @@ L'ordre est délibéré :
 
 Une image vulnérable n'atteint donc jamais le registre, et ce qui est déployé est exactement ce qui a été scanné.
 
+### Job `azure-config` : déploiement conditionnel
+
+Ce job vérifie que les variables Azure du dépôt existent (`AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID`, `TFSTATE_STORAGE_ACCOUNT`).
+Si elles sont absentes, les jobs `staging` et `production` sont **ignorés**, et un avertissement est écrit dans le résumé du run. Les contrôles, le build et le scan de l'image s'exécutent quand même.
+Les workflows planifiés (`restore-test.yml`, `image-rescan.yml`) utilisent le même mécanisme.
+Le projet peut ainsi être forké et vérifié sans abonnement Azure, et le déploiement s'active sans modifier le code.
+
 ### Job `staging` : le banc d'essai
 
 Le staging est créé, testé et détruit à chaque exécution ([ADR 0003](../adr/0003-staging-ephemere.md)).

@@ -15,10 +15,16 @@ updates:
     schedule:
       interval: weekly
 
+  # Un seul PR pour tous les dossiers Terraform : les contraintes de version
+  # du module et des environnements doivent évoluer ensemble, sinon chaque PR
+  # isolé est incohérent (module en 4.x, environnement en 5.x) et échoue.
   - package-ecosystem: terraform
     directories: ["/terraform/bootstrap", "/terraform/environments/*", "/terraform/modules/*"]
     schedule:
       interval: weekly
+    groups:
+      terraform-providers:
+        patterns: ["*"]
 
   - package-ecosystem: pip
     directory: /

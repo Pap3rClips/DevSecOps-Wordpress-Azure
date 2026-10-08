@@ -13,8 +13,32 @@ permissions:
   contents: read
 
 jobs:
+  azure-config:
+    name: Configuration Azure
+    runs-on: ubuntu-24.04
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Vérifier que le déploiement Azure est configuré
+        id: check
+        env:
+          SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TENANT: ${{ vars.AZURE_TENANT_ID }}
+          TFSTATE: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+        run: |
+          if [[ -n "${SUBSCRIPTION}" && -n "${TENANT}" && -n "${TFSTATE}" ]]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            msg="Azure n'est pas configuré (variables AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID, TFSTATE_STORAGE_ACCOUNT) : aucune image en production à rescanner. Voir docs/setup.md."
+            echo "::notice title=Déploiement désactivé::${msg}"
+            echo "### ⚠️ ${msg}" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
   rescan:
     name: Trivy sur l'image :production
+    needs: azure-config
+    if: needs.azure-config.outputs.configured == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

@@ -24,8 +24,32 @@ env:
   ANSIBLE_CONFIG: ansible/ansible.cfg
 
 jobs:
+  azure-config:
+    name: Configuration Azure
+    runs-on: ubuntu-24.04
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Vérifier que le déploiement Azure est configuré
+        id: check
+        env:
+          SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TENANT: ${{ vars.AZURE_TENANT_ID }}
+          TFSTATE: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+        run: |
+          if [[ -n "${SUBSCRIPTION}" && -n "${TENANT}" && -n "${TFSTATE}" ]]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            msg="Azure n'est pas configuré (variables AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID, TFSTATE_STORAGE_ACCOUNT) : aucune production à tester. Voir docs/setup.md."
+            echo "::notice title=Déploiement désactivé::${msg}"
+            echo "### ⚠️ ${msg}" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
   restore-test:
     name: Restauration de bout en bout
+    needs: azure-config
+    if: needs.azure-config.outputs.configured == 'true'
     runs-on: ubuntu-24.04
     # Environnement sans approbation, réservé à la branche main ; même
     # identité Azure que la production (fédération OIDC dédiée).
@@ -58,10 +82,10 @@ jobs:
           terraform -chdir="${TF_DIR}" init \
             -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
             -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
-          scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
+          bash scripts/render-ansible-inputs.sh "${TF_DIR}" "${WORK}" production
 
       - name: Ouvrir un accès SSH éphémère
-        run: scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
+        run: bash scripts/ephemeral-access.sh open "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}" "22"
 
       - name: Lancer le test de restauration
         env:
@@ -73,7 +97,7 @@ jobs:
 
       - name: Fermer l'accès éphémère
         if: always() && steps.tf.outputs.nsg != ''
-        run: scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
+        run: bash scripts/ephemeral-access.sh close "${{ steps.tf.outputs.resource_group }}" "${{ steps.tf.outputs.nsg }}"
 
       - name: Effacer les fichiers sensibles
         if: always()
